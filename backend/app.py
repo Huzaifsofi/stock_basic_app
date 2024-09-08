@@ -1,11 +1,14 @@
 from flask import Flask,  jsonify, request
 from flask_restful import Resource, Api
+from flask_cors import CORS
 from niftystocks import ns
 import yfinance as yf
 import psycopg2
 
 app = Flask(__name__)
 api = Api(app)
+
+CORS(app)
 
 def get_db_connection():
     conn = psycopg2.connect(
@@ -20,6 +23,26 @@ def get_db_connection():
 class Heello(Resource):
 
     def get(self):
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                '''CREATE TABLE IF NOT EXISTS stocks (
+                id serial PRIMARY KEY,
+                name varchar(100),
+                price float,
+                current_price float
+                );'''
+            )
+
+            conn.commit()
+        except Exception as e:
+            return {"message": str(e)}, 500
+        finally:
+            cur.close()
+            conn.close()
+
+
         # Fetch the Nifty 50 tickers
         q = ns.get_nifty50()
 
@@ -76,16 +99,20 @@ class Potfoliyo(Resource):
         conn = get_db_connection()
         try:
             cur = conn.cursor()
+            """
             cur.execute(
                 '''CREATE TABLE IF NOT EXISTS stocks (
                 id serial PRIMARY KEY,
                 name varchar(100),
-                price float);'''
+                price float,
+                current_price float
+                );'''
             )
+            """
 
             cur.execute(
-                '''INSERT INTO stocks (name, price) VALUES (%s, %s);''',
-                (data['name'], data['price'])
+                '''INSERT INTO stocks (name, price, current_price) VALUES (%s, %s, %s);''',
+                (data['name'], data['price'], data['price'])
             )
             conn.commit()
         except Exception as e:
@@ -154,17 +181,33 @@ class UpdatePot(Resource):
 
             column_names = [desc[0] for desc in cur.description]
             data = [dict(zip(column_names, row)) for row in rows]
+            
             for datas in data:
                 name = datas['name']
-                stock = yf.Ticker(name)
-                stock_info = stock.history(period='1d')
-                price_raw = stock_info['Close'].iloc[0]
-                price = f"{price_raw:.2f}"
-                #print(f"Stock: {tickers} - Price: {price:.2f} ")
+                id = datas['id']
+
+                try:
+                    stock = yf.Ticker(name)
+                    stock_info = stock.history(period='1d')
+
+                    if stock_info.empty:
+                        continue
+                    
+                    price_raw = stock_info['Close'].iloc[0]
+                    price = f"{price_raw:.2f}"
+                
+                    update_query = '''UPDATE stocks SET current_price = %s WHERE id = %s'''
+                    cur.execute(update_query, (price, id))
+                except Exception as stock_error:
+                    # Log any issue with fetching stock data
+                    print(f"Error fetching data for {name}: {stock_error}")
+                    continue
+
+                conn.commit()
+
+            return jsonify({"message": "Stock prices updated successfully!"})
 
 
-
-            return jsonify(data)
         except Exception as e:
             return {"message": str(e)}, 500
         finally:
